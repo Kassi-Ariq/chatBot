@@ -1,10 +1,10 @@
 import ollama
 import chromadb
 
-def get_relevant_items(items, prompt, collection_name, size, model="all-minilm"):
+def get_relevant_items(client, items, prompt, collection_name, size, model="all-minilm"):
 
 
-    client = chromadb.Client()
+    
 
  
     if collection_name in client.list_collections():
@@ -32,8 +32,8 @@ def get_relevant_items(items, prompt, collection_name, size, model="all-minilm")
 
     return results['documents'][0]
 
-def getRelevantData(searchResults, prompt):
-    return get_relevant_items(searchResults, prompt, collection_name="search_results", size=5)
+def getRelevantData(client, searchResults, prompt):
+    return get_relevant_items(client, searchResults, prompt, collection_name="search_results", size=5)
 
 def getRelevantImages(images, prompt):
     images_alt = [img[1] for img in images] 
