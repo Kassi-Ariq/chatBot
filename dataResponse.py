@@ -1,12 +1,7 @@
 import ollama
-import chromadb
 
 def get_relevant_items(client, items, prompt, collection_name, size, model="all-minilm"):
 
-
-    
-
- 
     if collection_name in client.list_collections():
         client.delete_collection(collection_name)
         
