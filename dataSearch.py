@@ -2,7 +2,6 @@ import requests
 from bs4 import BeautifulSoup
 
 def search_google(query):
-    print("searching...")
     api_key = "AIzaSyDQzE1u1LNDERNCBpXBC9mxntYKStrEWlE"
     cx = "f335791899e1e4129"
     url = f"https://www.googleapis.com/customsearch/v1?q={query}&key={api_key}&cx={cx}"
@@ -15,12 +14,9 @@ def search_google(query):
     snippets = [result.get("snippet", "") for result in data['items']]
 
     urls = [result.get('link') for result in data.get('items', [])[:2] if result.get('link')]
-    print("urls: ", urls)
     data_contents = [scrape_full_content(url) for url in urls]
     images = [scrape_images(url) for url in urls]
     images = [image for sub_images in images for image in sub_images]
-
-    print("data content:", data_contents)
 
     return (snippets + data_contents, images)
 
