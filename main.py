@@ -3,10 +3,9 @@ from langchain_ollama import OllamaLLM
 import PyPDF2
 import chromadb
 from dataSearch import search_google
-from dataResponse import getRelevantData
 from pymongo import MongoClient
 from langchain_core.prompts import PromptTemplate
-from langchain_core.runnables import RunnableParallel
+from langchain_core.runnables import RunnableParallel, RunnablePassthrough
 from callback import AlertCallback
 from telegram_notification import telegramSendMessage
 from langchain.memory import ConversationBufferMemory
@@ -16,18 +15,16 @@ client = MongoClient("mongodb+srv://Kassiyet:x8mWdUpxZoBOCdta@kassiyet.c2egr.mon
 db = client["chatbot_db"]
 collection = db["saved_chats"]
 
-
 chroma_client = chromadb.Client()
-
 
 st.set_page_config(page_title="Chatbot", layout="wide")
 
+
+
+
+
 # Initialize Short Term Memory
 memory = ConversationBufferMemory()
-
-
-
-
 
 # Initialize Session State
 if "messages" not in st.session_state:
@@ -44,8 +41,7 @@ if "selected_model" not in st.session_state:
 
 
 
-
-# Function to extract text from uploaded file
+# Functions
 def extract_text(file):
     if file.type == "text/plain":
         return file.read().decode("utf-8")
@@ -53,6 +49,27 @@ def extract_text(file):
         reader = PyPDF2.PdfReader(file)
         return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
     return ""
+
+def page_refresh():
+    st.session_state.messages = [] 
+    st.session_state.running_chat = ""
+    st.session_state.uploaded_file = None
+    st.session_state.use_web_search = False
+    memory.clear()
+    st.rerun() 
+
+def saveInShortMem(message):
+    for i in range(0, len(message) - 1, 2):  
+            if (message[i]["role"] == "user" and 
+                message[i + 1]["role"] == "assistant"):
+                
+                user_input = message[i]["content"]
+                assistant_output = message[i + 1]["content"]
+                memory.save_context({"input": user_input}, {"output": assistant_output})
+
+
+
+
 
 # Sidebar
 st.sidebar.header("Tools")
@@ -82,13 +99,6 @@ if uploaded_file:
 st.sidebar.divider()
 
 # New Chat
-def page_refresh():
-    st.session_state.messages = [] 
-    st.session_state.running_chat = ""
-    st.session_state.uploaded_file = None
-    st.session_state.use_web_search = False
-    memory.clear()
-    st.rerun() 
 
 if st.sidebar.button("New Chat"):
     page_refresh()
@@ -127,15 +137,9 @@ st.sidebar.subheader("Saved Chats")
 # Fetch saved chats from MongoDB
 saved_chats = collection.find({}, {"_id": 0}) 
 
-# Save in short memory
-def saveInShortMem(message):
-    for i in range(0, len(message) - 1, 2):  
-            if (message[i]["role"] == "user" and 
-                message[i + 1]["role"] == "assistant"):
-                
-                user_input = message[i]["content"]
-                assistant_output = message[i + 1]["content"]
-                memory.save_context({"input": user_input}, {"output": assistant_output})
+
+
+
 
 
 # Create chains
@@ -145,13 +149,31 @@ emergency_prompt = PromptTemplate.from_template(
 swear_prompt = PromptTemplate.from_template(
     "Does this message contain any offensive or inappropriate language? Reply with only 'YES' or 'NO'. Message: {message}"
 )
+search_prompt = PromptTemplate.from_template(
+    "Based on the previous conversation:\n{previousConversation}\n"
+    "and the user's question:\n{question}\n"
+    "Generate a short and effective Google search query. "
+    "Reply with only query result"
+)
+
 emergency_chain = emergency_prompt | ollama_llm
 swear_chain = swear_prompt | ollama_llm
+
+search_query_chain = (
+    RunnablePassthrough.assign(query=lambda x: x["question"])
+    | search_prompt
+    | ollama_llm
+)
 
 parallel_chain = RunnableParallel(
     emergency=emergency_chain, 
     swear=swear_chain
 )
+
+
+
+
+
 
 
 for chat in saved_chats:
@@ -185,20 +207,25 @@ if user_input := st.chat_input("Ask me anything..."):
     if st.session_state.use_web_search:
         with st.chat_message("assistant"):
             with st.spinner("Searching the web..."):
-                web_results = search_google(user_input)
-                data = web_results[0] if web_results else "No relevant results found."
-                relevant_data = getRelevantData(chroma_client, data, user_input)
-                relevant_data_text = "\n".join(relevant_data)
-
                 past_memory = memory.load_memory_variables({})["history"]
                 if past_memory:
-                    prompt = f"Previous conversation:\n{past_memory}\n\nUsing this data:\n{relevant_data_text}.\nRespond to this prompt:\n{user_input}"
+                    input_data = {
+                        "previousConversation": past_memory,
+                        "question": user_input
+                    }
+                    search_query = search_query_chain.invoke(input_data)
+                    print(search_query)
+                    web_results = search_google(search_query)
+                    data = web_results[0] if web_results else "No relevant results found."
+                    prompt = f"Previous conversation:\n{past_memory}\n\nUsing this data:\n{data}.\nRespond to this prompt:\n{search_query}"
                 else:
-                    prompt = f"Using this data:\n{relevant_data_text}.\nRespond to this prompt:\n{user_input}"
+                    web_results = search_google(user_input)
+                    data = web_results[0] if web_results else "No relevant results found."
+                    prompt = f"Using this data:\n{data}.\nRespond to this prompt:\n{user_input}"
 
                 response = ollama_llm.invoke(prompt)
                 st.markdown(response)
-                
+
 
     elif st.session_state.uploaded_file:
         with st.chat_message("assistant"):
