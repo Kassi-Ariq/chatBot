@@ -99,8 +99,11 @@ for message in st.session_state.messages:
 
 # User Input Handling
 if user_input := st.chat_input("Ask me anything..."):
+    urgency_keywords = ["urgent", "emergency", "help"]
     if contains_profanity(user_input):
         response = "🚫 Please avoid using inappropriate language."
+    elif any(word in user_input.lower() for word in urgency_keywords):
+        response = "⚠️ It looks like you need urgent assistance. How can I help you?"
     else:
         # Retrieve conversation context
         conversation_context = st.session_state.memory.load_memory_variables({})["history"]
