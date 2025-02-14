@@ -7,6 +7,8 @@ from dataResponse import getRelevantData
 from pymongo import MongoClient
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableParallel
+from callback import AlertCallback
+from telegram_notification import telegramSendMessage
 
 client = MongoClient("mongodb+srv://Kassiyet:x8mWdUpxZoBOCdta@kassiyet.c2egr.mongodb.net/?retryWrites=true&w=majority&appName=Kassiyet")
 db = client["chatbot_db"]
@@ -158,20 +160,23 @@ if user_input := st.chat_input("Ask me anything..."):
     else:
         with st.chat_message("assistant"):
             with st.spinner("Analyzing message..."):
+
+                callback = AlertCallback()
+
                 # Run both checks in parallel
-                detection_results = parallel_chain.invoke({"message": user_input})
-                
+                detection_results = parallel_chain.invoke(
+                    {"message": user_input},
+                    config={"callbacks": [callback]}
+                )
                 emergency_result = detection_results["emergency"].strip().upper()
                 swear_result = detection_results["swear"].strip().upper()
 
-                # Handle emergency cases
-                if emergency_result == "YES":
-                    response = "🚨Emergency detected! Please call 911 or seek immediate help.🚨"
-                # Handle swear word cases
-                elif swear_result == "YES":
-                    response = "🛑Please avoid using inappropriate language.🛑"
+                callback_result = callback.get_result()
+                if callback_result:
+                    response = callback_result
+                    notifcation_result = callback.get_notification_result()
+                    telegramSendMessage(notifcation_result)
                 else:
-                    # If no issues, proceed with normal chatbot response
                     response = ollama_llm.invoke(user_input)
 
                 st.markdown(response)
