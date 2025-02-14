@@ -9,6 +9,8 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableParallel
 from callback import AlertCallback
 from telegram_notification import telegramSendMessage
+from langchain.memory import ConversationBufferMemory
+
 
 client = MongoClient("mongodb+srv://Kassiyet:x8mWdUpxZoBOCdta@kassiyet.c2egr.mongodb.net/?retryWrites=true&w=majority&appName=Kassiyet")
 db = client["chatbot_db"]
@@ -16,25 +18,15 @@ collection = db["saved_chats"]
 
 
 chroma_client = chromadb.Client()
-ollama_llm = OllamaLLM(model="llama3.2")
+
 
 st.set_page_config(page_title="Chatbot", layout="wide")
 
+# Initialize Short Term Memory
+memory = ConversationBufferMemory()
 
-# Create chains
-emergency_prompt = PromptTemplate.from_template(
-    "Does this message indicate an emergency? Reply with only 'YES' or 'NO'. Message: {message}"
-)
-swear_prompt = PromptTemplate.from_template(
-    "Does this message contain any offensive or inappropriate language? Reply with only 'YES' or 'NO'. Message: {message}"
-)
-emergency_chain = emergency_prompt | ollama_llm
-swear_chain = swear_prompt | ollama_llm
 
-parallel_chain = RunnableParallel(
-    emergency=emergency_chain, 
-    swear=swear_chain
-)
+
 
 
 # Initialize Session State
@@ -46,6 +38,12 @@ if "use_web_search" not in st.session_state:
     st.session_state.use_web_search = False
 if "uploaded_file" not in st.session_state:
     st.session_state.uploaded_file = None
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = "llama3.2"
+
+
+
+
 
 # Function to extract text from uploaded file
 def extract_text(file):
@@ -58,6 +56,20 @@ def extract_text(file):
 
 # Sidebar
 st.sidebar.header("Tools")
+
+col1, col2 = st.sidebar.columns(2)
+
+with col1:
+    if st.button("Llama 3.2", use_container_width=True):
+        st.session_state.selected_model = "llama3.2"
+
+with col2:
+    if st.button("Gemma", use_container_width=True):
+        st.session_state.selected_model = "gemma"
+
+st.sidebar.write(f"Current model: {st.session_state.selected_model}")
+
+ollama_llm = OllamaLLM(model=st.session_state.selected_model)
 
 # Web Search Toggle
 st.session_state.use_web_search = st.sidebar.checkbox("Web Search", value=False)
@@ -75,6 +87,7 @@ def page_refresh():
     st.session_state.running_chat = ""
     st.session_state.uploaded_file = None
     st.session_state.use_web_search = False
+    memory.clear()
     st.rerun() 
 
 if st.sidebar.button("New Chat"):
@@ -95,8 +108,8 @@ if save_button:
         # If a chat is already open, update it
         if st.session_state.running_chat:  
             collection.update_one(
-                {"title": st.session_state.running_chat},  # Find existing chat by title
-                {"$set": chat_data}  # Update the messages
+                {"title": st.session_state.running_chat},  
+                {"$set": chat_data}
             )
             st.sidebar.success(f"Chat '{chat_title}' updated in MongoDB!")
         
@@ -112,12 +125,40 @@ if save_button:
 st.sidebar.subheader("Saved Chats")
 
 # Fetch saved chats from MongoDB
-saved_chats = collection.find({}, {"_id": 0})  # Exclude MongoDB ID field
+saved_chats = collection.find({}, {"_id": 0}) 
+
+# Save in short memory
+def saveInShortMem(message):
+    for i in range(0, len(message) - 1, 2):  
+            if (message[i]["role"] == "user" and 
+                message[i + 1]["role"] == "assistant"):
+                
+                user_input = message[i]["content"]
+                assistant_output = message[i + 1]["content"]
+                memory.save_context({"input": user_input}, {"output": assistant_output})
+
+
+# Create chains
+emergency_prompt = PromptTemplate.from_template(
+    "Does this message indicate an emergency? Reply with only 'YES' or 'NO'. Message: {message}"
+)
+swear_prompt = PromptTemplate.from_template(
+    "Does this message contain any offensive or inappropriate language? Reply with only 'YES' or 'NO'. Message: {message}"
+)
+emergency_chain = emergency_prompt | ollama_llm
+swear_chain = swear_prompt | ollama_llm
+
+parallel_chain = RunnableParallel(
+    emergency=emergency_chain, 
+    swear=swear_chain
+)
+
 
 for chat in saved_chats:
     chat_title = chat["title"]
     if st.sidebar.button(chat_title):
-        st.session_state.messages = chat["messages"]
+        st.session_state.messages = chat["messages"]    
+        saveInShortMem(st.session_state.messages)
         st.session_state.running_chat = chat_title
         st.rerun()
 
@@ -130,9 +171,15 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 if user_input := st.chat_input("Ask me anything..."):
+
+    #save previous messages into short memory
+    saveInShortMem(st.session_state.messages)
+
+
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
+
     response = ""
 
     if st.session_state.use_web_search:
@@ -142,7 +189,14 @@ if user_input := st.chat_input("Ask me anything..."):
                 data = web_results[0] if web_results else "No relevant results found."
                 relevant_data = getRelevantData(chroma_client, data, user_input)
                 relevant_data_text = "\n".join(relevant_data)
-                response = ollama_llm.invoke(f"Using this data:\n{relevant_data_text}.\nRespond to this prompt:\n{user_input}")
+
+                past_memory = memory.load_memory_variables({})["history"]
+                if past_memory:
+                    prompt = f"Previous conversation:\n{past_memory}\n\nUsing this data:\n{relevant_data_text}.\nRespond to this prompt:\n{user_input}"
+                else:
+                    prompt = f"Using this data:\n{relevant_data_text}.\nRespond to this prompt:\n{user_input}"
+
+                response = ollama_llm.invoke(prompt)
                 st.markdown(response)
                 
 
@@ -151,7 +205,12 @@ if user_input := st.chat_input("Ask me anything..."):
             with st.spinner("Processing file..."):
                 file_text = extract_text(st.session_state.uploaded_file)
                 if file_text:
-                    response = ollama_llm.invoke(f"Using this document:\n{file_text}\nAnswer this:\n{user_input}")
+                    past_memory = memory.load_memory_variables({})["history"]
+                    if past_memory:
+                        prompt = f"Previous conversation:\n{past_memory}\n\nUsing this document:\n{file_text}\nAnswer this:\n{user_input}"
+                    else:
+                        prompt = f"Using this document:\n{file_text}\nAnswer this:\n{user_input}"
+                    response = ollama_llm.invoke(prompt)
                 else:
                     response = "Could not extract text from the file."
                 st.markdown(response)
@@ -177,7 +236,12 @@ if user_input := st.chat_input("Ask me anything..."):
                     notifcation_result = callback.get_notification_result()
                     telegramSendMessage(notifcation_result)
                 else:
-                    response = ollama_llm.invoke(user_input)
+                    past_memory = memory.load_memory_variables({})["history"]
+                    if past_memory:
+                        prompt = f"Previous conversation:\n{past_memory}\n\nUser: {user_input}"
+                    else:
+                        prompt = f"User: {user_input}"
+                    response = ollama_llm.invoke(prompt)
 
                 st.markdown(response)
     
